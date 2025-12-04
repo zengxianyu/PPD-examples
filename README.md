@@ -37,3 +37,15 @@ PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 python examples/wanvideo/model_inference/Wan
 ```
 
 4. For training please refer to https://github.com/modelscope/DiffSynth-Studio 
+
+If you find this work useful, please cite:
+
+```
+@article{zeng2025neuralremaster,
+  title   = {{NeuralRemaster}: Phase-Preserving Diffusion for Structure-Aligned Generation},
+  author  = {Zeng, Yu and Ochoa, Charles and Zhou, Mingyuan and Patel, Vishal M and
+             Guizilini, Vitor and McAllister, Rowan},
+  journal = {arXiv preprint arXiv:XXXX.XXXXX},
+  year    = {2025}
+}
+```
