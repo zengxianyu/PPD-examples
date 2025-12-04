@@ -111,6 +111,8 @@ class SDImagePipeline(BasePipeline):
         seed=None,
         progress_bar_cmd=tqdm,
         progress_bar_st=None,
+        noise=None,
+        return_latents=False,
     ):
         height, width = self.check_resize_height_width(height, width)
         
@@ -121,7 +123,9 @@ class SDImagePipeline(BasePipeline):
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength)
 
         # Prepare latent tensors
-        if input_image is not None:
+        if noise is not None:
+            latents = noise
+        elif input_image is not None:
             self.load_models_to_device(['vae_encoder'])
             image = self.preprocess_image(input_image).to(device=self.device, dtype=self.torch_dtype)
             latents = self.encode_image(image, **tiler_kwargs)
@@ -157,6 +161,7 @@ class SDImagePipeline(BasePipeline):
         
         # Denoise
         self.load_models_to_device(['controlnet', 'unet'])
+        list_latents = []
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
             timestep = timestep.unsqueeze(0).to(self.device)
 
@@ -177,6 +182,8 @@ class SDImagePipeline(BasePipeline):
 
             # DDIM
             latents = self.scheduler.step(noise_pred, timestep, latents)
+            if return_latents:
+                list_latents.append(latents.detach())
 
             # UI
             if progress_bar_st is not None:
@@ -188,4 +195,7 @@ class SDImagePipeline(BasePipeline):
 
         # offload all models
         self.load_models_to_device([])
-        return image
+        if return_latents:
+            return image, list_latents
+        else:
+            return image

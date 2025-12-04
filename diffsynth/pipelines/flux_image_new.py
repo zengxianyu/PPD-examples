@@ -126,6 +126,7 @@ class FluxImagePipeline(BasePipeline):
             FluxImageUnit_LoRAEncode(),
         ]
         self.model_fn = model_fn_flux_image
+        self.lora_loader = FluxLoRALoader(torch_dtype=self.torch_dtype, device=self.device)
         
         
     def load_lora(
@@ -494,6 +495,8 @@ class FluxImagePipeline(BasePipeline):
         tile_stride: int = 64,
         # Progress bar
         progress_bar_cmd = tqdm,
+        noise=None,
+        additional_inputs=None
     ):
         # Scheduler
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength=denoising_strength, shift=sigma_shift)
@@ -527,6 +530,11 @@ class FluxImagePipeline(BasePipeline):
         }
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
+        if noise is not None:
+            inputs_shared["noise"] = noise
+            inputs_shared["latents"] = noise
+        if additional_inputs is not None:
+            inputs_shared.update(additional_inputs)
 
         # Denoise
         self.load_models_to_device(self.in_iteration_models)

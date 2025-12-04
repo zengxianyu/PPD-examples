@@ -1,10 +1,10 @@
-import torch, warnings, glob, os, types
+import torch, types
+from PIL import Image, ImageEnhance
+import random
 import numpy as np
 from PIL import Image
-from einops import repeat, reduce
+from einops import repeat
 from typing import Optional, Union
-from dataclasses import dataclass
-from modelscope import snapshot_download
 from einops import rearrange
 import numpy as np
 from PIL import Image
@@ -22,8 +22,6 @@ from ..models.wan_video_image_encoder import WanImageEncoder
 from ..models.wan_video_vace import VaceWanModel
 from ..models.wan_video_motion_controller import WanMotionControllerModel
 from ..models.wan_video_animate_adapter import WanAnimateAdapter
-from ..models.wan_video_mot import MotWanModel
-from ..models.longcat_video_dit import LongCatVideoTransformer3DModel
 from ..schedulers.flow_match import FlowMatchScheduler
 from ..prompters import WanPrompter
 from ..vram_management import enable_vram_management, AutoWrappedModule, AutoWrappedLinear, WanAutoCastLayerNorm
@@ -48,10 +46,9 @@ class WanVideoPipeline(BasePipeline):
         self.motion_controller: WanMotionControllerModel = None
         self.vace: VaceWanModel = None
         self.vace2: VaceWanModel = None
-        self.vap: MotWanModel = None
         self.animate_adapter: WanAnimateAdapter = None
-        self.in_iteration_models = ("dit", "motion_controller", "vace", "animate_adapter", "vap")
-        self.in_iteration_models_2 = ("dit2", "motion_controller", "vace2", "animate_adapter", "vap")
+        self.in_iteration_models = ("dit", "motion_controller", "vace", "animate_adapter")
+        self.in_iteration_models_2 = ("dit2", "motion_controller", "vace2", "animate_adapter")
         self.unit_runner = PipelineUnitRunner()
         self.units = [
             WanVideoUnit_ShapeChecker(),
@@ -67,20 +64,24 @@ class WanVideoPipeline(BasePipeline):
             WanVideoUnit_FunCameraControl(),
             WanVideoUnit_SpeedControl(),
             WanVideoUnit_VACE(),
-            WanVideoPostUnit_AnimateVideoSplit(),
-            WanVideoPostUnit_AnimatePoseLatents(),
-            WanVideoPostUnit_AnimateFacePixelValues(),
-            WanVideoPostUnit_AnimateInpaint(),
-            WanVideoUnit_VAP(),
+            #WanVideoPostUnit_AnimateVideoSplit(),
+            #WanVideoPostUnit_AnimatePoseLatents(),
+            #WanVideoPostUnit_AnimateFacePixelValues(),
+            #WanVideoPostUnit_AnimateInpaint(),
             WanVideoUnit_UnifiedSequenceParallel(),
             WanVideoUnit_TeaCache(),
             WanVideoUnit_CfgMerger(),
-            WanVideoUnit_LongCatVideo(),
         ]
         self.post_units = [
             WanVideoPostUnit_S2V(),
         ]
         self.model_fn = model_fn_wan_video
+        self.vae_device = device
+        self.color_embed = torch.nn.Linear(1, 6*5120)
+        self.color_embed.weight.data.zero_()
+        self.color_embed.bias.data.zero_()
+        self.color_embed.requires_grad_(True)
+        self.color_embed.to(device=self.device, dtype=self.torch_dtype)
     
     def load_lora(
         self,
@@ -155,7 +156,6 @@ class WanVideoPipeline(BasePipeline):
                 vram_limit=vram_limit,
             )
         if self.dit is not None:
-            from ..models.longcat_video_dit import LayerNorm_FP32, RMSNorm_FP32
             dtype = next(iter(self.dit.parameters())).dtype
             device = "cpu" if vram_limit is not None else self.device
             enable_vram_management(
@@ -168,8 +168,6 @@ class WanVideoPipeline(BasePipeline):
                     torch.nn.Conv2d: AutoWrappedModule,
                     torch.nn.Conv1d: AutoWrappedModule,
                     torch.nn.Embedding: AutoWrappedModule,
-                    LayerNorm_FP32: AutoWrappedModule,
-                    RMSNorm_FP32: AutoWrappedModule,
                 },
                 module_config = dict(
                     offload_dtype=dtype,
@@ -395,7 +393,6 @@ class WanVideoPipeline(BasePipeline):
         pipe.image_encoder = model_manager.fetch_model("wan_video_image_encoder")
         pipe.motion_controller = model_manager.fetch_model("wan_video_motion_controller")
         vace = model_manager.fetch_model("wan_video_vace", index=2)
-        pipe.vap = model_manager.fetch_model("wan_video_vap")
         if isinstance(vace, list):
             pipe.vace, pipe.vace2 = vace
         else:
@@ -459,10 +456,6 @@ class WanVideoPipeline(BasePipeline):
         animate_face_video: Optional[list[Image.Image]] = None,
         animate_inpaint_video: Optional[list[Image.Image]] = None,
         animate_mask_video: Optional[list[Image.Image]] = None,
-        # VAP
-        vap_video: Optional[list[Image.Image]] = None,
-        vap_prompt: Optional[str] = " ",
-        negative_vap_prompt: Optional[str] = " ",
         # Randomness
         seed: Optional[int] = None,
         rand_device: Optional[str] = "cpu",
@@ -480,8 +473,6 @@ class WanVideoPipeline(BasePipeline):
         sigma_shift: Optional[float] = 5.0,
         # Speed control
         motion_bucket_id: Optional[int] = None,
-        # LongCat-Video
-        longcat_video: Optional[list[Image.Image]] = None,
         # VAE tiling
         tiled: Optional[bool] = True,
         tile_size: Optional[tuple[int, int]] = (30, 52),
@@ -494,6 +485,10 @@ class WanVideoPipeline(BasePipeline):
         tea_cache_model_id: Optional[str] = "",
         # progress_bar
         progress_bar_cmd=tqdm,
+        # Input noise
+        input_noise: Optional[torch.Tensor] = None,
+        additional_inputs: Optional[dict] = None,
+        additional_inputs2: Optional[dict] = None,
     ):
         # Scheduler
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength=denoising_strength, shift=sigma_shift)
@@ -501,12 +496,10 @@ class WanVideoPipeline(BasePipeline):
         # Inputs
         inputs_posi = {
             "prompt": prompt,
-            "vap_prompt": vap_prompt,
             "tea_cache_l1_thresh": tea_cache_l1_thresh, "tea_cache_model_id": tea_cache_model_id, "num_inference_steps": num_inference_steps,
         }
         inputs_nega = {
             "negative_prompt": negative_prompt,
-            "negative_vap_prompt": negative_vap_prompt,
             "tea_cache_l1_thresh": tea_cache_l1_thresh, "tea_cache_model_id": tea_cache_model_id, "num_inference_steps": num_inference_steps,
         }
         inputs_shared = {
@@ -521,15 +514,18 @@ class WanVideoPipeline(BasePipeline):
             "cfg_scale": cfg_scale, "cfg_merge": cfg_merge,
             "sigma_shift": sigma_shift,
             "motion_bucket_id": motion_bucket_id,
-            "longcat_video": longcat_video,
             "tiled": tiled, "tile_size": tile_size, "tile_stride": tile_stride,
             "sliding_window_size": sliding_window_size, "sliding_window_stride": sliding_window_stride,
             "input_audio": input_audio, "audio_sample_rate": audio_sample_rate, "s2v_pose_video": s2v_pose_video, "audio_embeds": audio_embeds, "s2v_pose_latents": s2v_pose_latents, "motion_video": motion_video,
             "animate_pose_video": animate_pose_video, "animate_face_video": animate_face_video, "animate_inpaint_video": animate_inpaint_video, "animate_mask_video": animate_mask_video,
-            "vap_video": vap_video, 
         }
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
+        if input_noise is not None:
+            inputs_shared["latents"] = input_noise.to(dtype=self.torch_dtype, device=self.device)
+        if additional_inputs is not None:
+            assert additional_inputs2 is not None, "additional_inputs2 should be provided when additional_inputs is provided."
+            inputs_shared.update(additional_inputs)
 
         # Denoise
         self.load_models_to_device(self.in_iteration_models)
@@ -540,6 +536,9 @@ class WanVideoPipeline(BasePipeline):
                 self.load_models_to_device(self.in_iteration_models_2)
                 models["dit"] = self.dit2
                 models["vace"] = self.vace2
+                if additional_inputs2 is not None:
+                    for k, v in additional_inputs2.items():
+                        inputs_shared[k] = v
                 
             # Timestep
             timestep = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
@@ -618,8 +617,27 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
         if input_video is None:
             return {"latents": noise}
         pipe.load_models_to_device(["vae"])
-        input_video = pipe.preprocess_video(input_video)
-        input_latents = pipe.vae.encode(input_video, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
+        vae_device = pipe.vae_device
+
+        saturation_factor = random.uniform(0, 1)
+        color_embedding = pipe.color_embed(torch.tensor([saturation_factor], device=pipe.device, dtype=pipe.torch_dtype))
+
+        grayscale = []
+        for img in input_video:
+            img = img.convert("RGB")
+            converter = ImageEnhance.Color(img)
+            img = converter.enhance(saturation_factor)
+            grayscale.append(img)
+
+        input_video = pipe.preprocess_video(input_video, device=vae_device)
+        input_latents = pipe.vae.encode(input_video, device=vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=vae_device)
+        input_latents = input_latents.to(dtype=pipe.torch_dtype, device=pipe.device)
+
+        input_video_gray = pipe.preprocess_video(grayscale, device=vae_device)
+        input_latents_gray = pipe.vae.encode(input_video_gray, device=vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=vae_device)
+        input_latents_gray = input_latents_gray.to(dtype=pipe.torch_dtype, device=pipe.device)
+        input_latents_for_noise = input_latents_gray
+
         if vace_reference_image is not None:
             if not isinstance(vace_reference_image, list):
                 vace_reference_image = [vace_reference_image]
@@ -627,7 +645,7 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
             vace_reference_latents = pipe.vae.encode(vace_reference_image, device=pipe.device).to(dtype=pipe.torch_dtype, device=pipe.device)
             input_latents = torch.concat([vace_reference_latents, input_latents], dim=2)
         if pipe.scheduler.training:
-            return {"latents": noise, "input_latents": input_latents}
+            return {"latents": noise, "input_latents": input_latents, "input_latents_for_noise": input_latents_for_noise, "color_emb": color_embedding}
         else:
             latents = pipe.scheduler.add_noise(input_latents, noise, timestep=pipe.scheduler.timesteps[0])
             return {"latents": latents}
@@ -681,7 +699,7 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
         msk = msk.view(1, msk.shape[1] // 4, 4, height//8, width//8)
         msk = msk.transpose(1, 2)[0]
         
-        y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
+        y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.vae_device)], device=pipe.vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
         y = torch.concat([msk, y])
         y = y.unsqueeze(0)
@@ -738,7 +756,7 @@ class WanVideoUnit_ImageEmbedderVAE(PipelineUnit):
         msk = msk.view(1, msk.shape[1] // 4, 4, height//8, width//8)
         msk = msk.transpose(1, 2)[0]
         
-        y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
+        y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.vae_device)], device=pipe.vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
         y = torch.concat([msk, y])
         y = y.unsqueeze(0)
@@ -761,8 +779,8 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         if input_image is None or not pipe.dit.fuse_vae_embedding_in_latents:
             return {}
         pipe.load_models_to_device(self.onload_model_names)
-        image = pipe.preprocess_image(input_image.resize((width, height))).transpose(0, 1)
-        z = pipe.vae.encode([image], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+        image = pipe.preprocess_image(input_image.resize((width, height)), device=pipe.vae_device).transpose(0, 1)
+        z = pipe.vae.encode([image], device=pipe.vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
         latents[:, :, 0: 1] = z
         return {"latents": latents, "fuse_vae_embedding_in_latents": True, "first_frame_latents": z}
 
@@ -779,8 +797,8 @@ class WanVideoUnit_FunControl(PipelineUnit):
         if control_video is None:
             return {}
         pipe.load_models_to_device(self.onload_model_names)
-        control_video = pipe.preprocess_video(control_video)
-        control_latents = pipe.vae.encode(control_video, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
+        control_video = pipe.preprocess_video(control_video, device=pipe.vae_device)
+        control_latents = pipe.vae.encode(control_video, device=pipe.vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
         control_latents = control_latents.to(dtype=pipe.torch_dtype, device=pipe.device)
         y_dim = pipe.dit.in_dim-control_latents.shape[1]-latents.shape[1]
         if clip_feature is None or y is None:
@@ -805,8 +823,8 @@ class WanVideoUnit_FunReference(PipelineUnit):
             return {}
         pipe.load_models_to_device(["vae"])
         reference_image = reference_image.resize((width, height))
-        reference_latents = pipe.preprocess_video([reference_image])
-        reference_latents = pipe.vae.encode(reference_latents, device=pipe.device)
+        reference_latents = pipe.preprocess_video([reference_image], device=pipe.vae_device)
+        reference_latents = pipe.vae.encode(reference_latents, device=pipe.vae_device)
         if pipe.image_encoder is None:
             return {"reference_latents": reference_latents}
         clip_feature = pipe.preprocess_image(reference_image)
@@ -842,8 +860,8 @@ class WanVideoUnit_FunCameraControl(PipelineUnit):
         control_camera_latents_input = control_camera_latents.to(device=pipe.device, dtype=pipe.torch_dtype)
         
         input_image = input_image.resize((width, height))
-        input_latents = pipe.preprocess_video([input_image])
-        input_latents = pipe.vae.encode(input_latents, device=pipe.device)
+        input_latents = pipe.preprocess_video([input_image], device=pipe.vae_device)
+        input_latents = pipe.vae.encode(input_latents, device=pipe.vae_device)
         y = torch.zeros_like(latents).to(pipe.device)
         y[:, :, :1] = input_latents
         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
@@ -851,7 +869,7 @@ class WanVideoUnit_FunCameraControl(PipelineUnit):
         if y.shape[1] != pipe.dit.in_dim - latents.shape[1]:
             image = pipe.preprocess_image(input_image.resize((width, height))).to(pipe.device)
             vae_input = torch.concat([image.transpose(0, 1), torch.zeros(3, num_frames-1, height, width).to(image.device)], dim=1)
-            y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
+            y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.vae_device)], device=pipe.vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
             y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
             msk = torch.ones(1, num_frames, height//8, width//8, device=pipe.device)
             msk[:, 1:] = 0
@@ -937,71 +955,6 @@ class WanVideoUnit_VACE(PipelineUnit):
             return {"vace_context": vace_context, "vace_scale": vace_scale}
         else:
             return {"vace_context": None, "vace_scale": vace_scale}
-
-class WanVideoUnit_VAP(PipelineUnit):
-    def __init__(self):
-        super().__init__(
-            take_over=True,
-            onload_model_names=("text_encoder", "vae", "image_encoder")
-        )
-
-    def process(self, pipe: WanVideoPipeline, inputs_shared, inputs_posi, inputs_nega):
-        if inputs_shared.get("vap_video") is None:
-            return inputs_shared, inputs_posi, inputs_nega
-        else:
-            # 1. encode vap prompt
-            pipe.load_models_to_device(["text_encoder"])
-            vap_prompt, negative_vap_prompt = inputs_posi.get("vap_prompt", ""), inputs_nega.get("negative_vap_prompt", "")
-            vap_prompt_emb = pipe.prompter.encode_prompt(vap_prompt, positive=inputs_posi.get('positive',None), device=pipe.device)
-            negative_vap_prompt_emb = pipe.prompter.encode_prompt(negative_vap_prompt, positive=inputs_nega.get('positive',None), device=pipe.device)
-            inputs_posi.update({"context_vap":vap_prompt_emb})
-            inputs_nega.update({"context_vap":negative_vap_prompt_emb})
-            # 2. prepare vap image clip embedding
-            pipe.load_models_to_device(["vae", "image_encoder"])
-            vap_video, end_image = inputs_shared.get("vap_video"), inputs_shared.get("end_image")
-
-            num_frames, height, width, mot_num = inputs_shared.get("num_frames"),inputs_shared.get("height"), inputs_shared.get("width"), inputs_shared.get("mot_num",1)
-            
-            image_vap = pipe.preprocess_image(vap_video[0].resize((width, height))).to(pipe.device)
-
-            vap_clip_context = pipe.image_encoder.encode_image([image_vap])
-            if end_image is not None:
-                vap_end_image = pipe.preprocess_image(vap_video[-1].resize((width, height))).to(pipe.device)
-                if pipe.dit.has_image_pos_emb:
-                    vap_clip_context = torch.concat([vap_clip_context, pipe.image_encoder.encode_image([vap_end_image])], dim=1)
-            vap_clip_context = vap_clip_context.to(dtype=pipe.torch_dtype, device=pipe.device)
-            inputs_shared.update({"vap_clip_feature":vap_clip_context})
-
-            # 3. prepare vap latents            
-            msk = torch.ones(1, num_frames, height//8, width//8, device=pipe.device)
-            msk[:, 1:] = 0
-            if end_image is not None:
-                msk[:, -1:] = 1
-                last_image_vap = pipe.preprocess_image(vap_video[-1].resize((width, height))).to(pipe.device)
-                vae_input = torch.concat([image_vap.transpose(0,1), torch.zeros(3, num_frames-2, height, width).to(image_vap.device), last_image_vap.transpose(0,1)],dim=1)
-            else:
-                vae_input = torch.concat([image_vap.transpose(0, 1), torch.zeros(3, num_frames-1, height, width).to(image_vap.device)], dim=1)
-            
-            msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
-            msk = msk.view(1, msk.shape[1] // 4, 4, height//8, width//8)
-            msk = msk.transpose(1, 2)[0]
-
-            tiled,tile_size,tile_stride = inputs_shared.get("tiled"), inputs_shared.get("tile_size"), inputs_shared.get("tile_stride")
-
-            y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
-            y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
-            y = torch.concat([msk, y])
-            y = y.unsqueeze(0)
-            y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
-
-            vap_video = pipe.preprocess_video(vap_video)
-            vap_latent = pipe.vae.encode(vap_video, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
-
-            vap_latent = torch.concat([vap_latent,y], dim=1).to(dtype=pipe.torch_dtype, device=pipe.device)
-            inputs_shared.update({"vap_hidden_state":vap_latent})
-            pipe.load_models_to_device([])
-
-            return inputs_shared, inputs_posi, inputs_nega
 
 
 
@@ -1112,8 +1065,8 @@ class WanVideoUnit_S2V(PipelineUnit):
         if (inputs_shared.get("input_audio") is None and inputs_shared.get("audio_embeds") is None) or pipe.audio_encoder is None or pipe.audio_processor is None:
             return inputs_shared, inputs_posi, inputs_nega
         num_frames, height, width, tiled, tile_size, tile_stride = inputs_shared.get("num_frames"), inputs_shared.get("height"), inputs_shared.get("width"), inputs_shared.get("tiled"), inputs_shared.get("tile_size"), inputs_shared.get("tile_stride")
-        input_audio, audio_embeds, audio_sample_rate = inputs_shared.pop("input_audio", None), inputs_shared.pop("audio_embeds", None), inputs_shared.get("audio_sample_rate", 16000)
-        s2v_pose_video, s2v_pose_latents, motion_video = inputs_shared.pop("s2v_pose_video", None), inputs_shared.pop("s2v_pose_latents", None), inputs_shared.pop("motion_video", None)
+        input_audio, audio_embeds, audio_sample_rate = inputs_shared.pop("input_audio"), inputs_shared.pop("audio_embeds"), inputs_shared.get("audio_sample_rate")
+        s2v_pose_video, s2v_pose_latents, motion_video = inputs_shared.pop("s2v_pose_video"), inputs_shared.pop("s2v_pose_latents"), inputs_shared.pop("motion_video")
 
         audio_input_positive = self.process_audio(pipe, input_audio, audio_sample_rate, num_frames, audio_embeds=audio_embeds)
         inputs_posi.update(audio_input_positive)
@@ -1186,7 +1139,7 @@ class WanVideoPostUnit_AnimateFacePixelValues(PipelineUnit):
 
     def process(self, pipe: WanVideoPipeline, inputs_shared, inputs_posi, inputs_nega):
         if inputs_shared.get("animate_face_video", None) is None:
-            return inputs_shared, inputs_posi, inputs_nega
+            return {}
         inputs_posi["face_pixel_values"] = pipe.preprocess_video(inputs_shared["animate_face_video"])
         inputs_nega["face_pixel_values"] = torch.zeros_like(inputs_posi["face_pixel_values"]) - 1
         return inputs_shared, inputs_posi, inputs_nega
@@ -1233,22 +1186,6 @@ class WanVideoPostUnit_AnimateInpaint(PipelineUnit):
         y_reft = torch.concat([msk_reft, y_reft]).to(dtype=torch.bfloat16, device=pipe.device)
         y = torch.concat([y_ref, y_reft], dim=1).unsqueeze(0)
         return {"y": y}
-
-
-class WanVideoUnit_LongCatVideo(PipelineUnit):
-    def __init__(self):
-        super().__init__(
-            input_params=("longcat_video",),
-            onload_model_names=("vae",)
-        )
-
-    def process(self, pipe: WanVideoPipeline, longcat_video):
-        if longcat_video is None:
-            return {}
-        pipe.load_models_to_device(self.onload_model_names)
-        longcat_video = pipe.preprocess_video(longcat_video)
-        longcat_latents = pipe.vae.encode(longcat_video, device=pipe.device).to(dtype=pipe.torch_dtype, device=pipe.device)
-        return {"longcat_latents": longcat_latents}
 
 
 class TeaCache:
@@ -1361,7 +1298,6 @@ def model_fn_wan_video(
     dit: WanModel,
     motion_controller: WanMotionControllerModel = None,
     vace: VaceWanModel = None,
-    vap: MotWanModel = None,
     animate_adapter: WanAnimateAdapter = None,
     latents: torch.Tensor = None,
     timestep: torch.Tensor = None,
@@ -1374,16 +1310,12 @@ def model_fn_wan_video(
     audio_embeds: Optional[torch.Tensor] = None,
     motion_latents: Optional[torch.Tensor] = None,
     s2v_pose_latents: Optional[torch.Tensor] = None,
-    vap_hidden_state = None,
-    vap_clip_feature = None,
-    context_vap = None,
     drop_motion_frames: bool = True,
     tea_cache: TeaCache = None,
     use_unified_sequence_parallel: bool = False,
     motion_bucket_id: Optional[torch.Tensor] = None,
     pose_latents=None,
     face_pixel_values=None,
-    longcat_latents=None,
     sliding_window_size: Optional[int] = None,
     sliding_window_stride: Optional[int] = None,
     cfg_merge: bool = False,
@@ -1418,18 +1350,6 @@ def model_fn_wan_video(
             tensor_names=["latents", "y"],
             batch_size=2 if cfg_merge else 1
         )
-    # LongCat-Video
-    if isinstance(dit, LongCatVideoTransformer3DModel):
-        return model_fn_longcat_video(
-            dit=dit,
-            latents=latents,
-            timestep=timestep,
-            context=context,
-            longcat_latents=longcat_latents,
-            use_gradient_checkpointing=use_gradient_checkpointing,
-            use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
-        )
-        
     # wan2.2 s2v
     if audio_embeds is not None:
         return model_fn_wans2v(
@@ -1486,13 +1406,12 @@ def model_fn_wan_video(
     if clip_feature is not None and dit.require_clip_embedding:
         clip_embdding = dit.img_emb(clip_feature)
         context = torch.cat([clip_embdding, context], dim=1)
-        
+    
     # Camera control
     x = dit.patchify(x, control_camera_latents_input)
     
     # Animate
-    if pose_latents is not None and face_pixel_values is not None:
-        x, motion_vec = animate_adapter.after_patch_embedding(x, pose_latents, face_pixel_values)
+    #x, motion_vec = animate_adapter.after_patch_embedding(x, pose_latents, face_pixel_values)
     
     # Patchify
     f, h, w = x.shape[2:]
@@ -1511,25 +1430,6 @@ def model_fn_wan_video(
         dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
         dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
     ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
-
-    # VAP 
-    if vap is not None:
-        # hidden state
-        x_vap = vap_hidden_state
-        x_vap = vap.patchify(x_vap)
-        x_vap = rearrange(x_vap, 'b c f h w -> b (f h w) c').contiguous()
-        # Timestep
-        clean_timestep = torch.ones(timestep.shape, device=timestep.device).to(timestep.dtype)
-        t = vap.time_embedding(sinusoidal_embedding_1d(vap.freq_dim, clean_timestep))
-        t_mod_vap = vap.time_projection(t).unflatten(1, (6, vap.dim))
-
-        # rope
-        freqs_vap = vap.compute_freqs_mot(f,h,w).to(x.device)
-
-        # context
-        vap_clip_embedding = vap.img_emb(vap_clip_feature)
-        context_vap = vap.text_embedding(context_vap)
-        context_vap = torch.cat([vap_clip_embedding, context_vap], dim=1)
     
     # TeaCache
     if tea_cache is not None:
@@ -1559,45 +1459,23 @@ def model_fn_wan_video(
                 return module(*inputs)
             return custom_forward
         
-        def create_custom_forward_vap(block, vap):
-            def custom_forward(*inputs):
-                return vap(block, *inputs)
-            return custom_forward
-        
         for block_id, block in enumerate(dit.blocks):
             # Block
-            if vap is not None and block_id in vap.mot_layers_mapping:
-                if use_gradient_checkpointing_offload:
-                    with torch.autograd.graph.save_on_cpu():
-                        x, x_vap = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward_vap(block, vap),
-                            x, context, t_mod, freqs, x_vap, context_vap, t_mod_vap, freqs_vap, block_id,
-                            use_reentrant=False,
-                        )
-                elif use_gradient_checkpointing:
-                    x, x_vap = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward_vap(block, vap),
-                        x, context, t_mod, freqs, x_vap, context_vap, t_mod_vap, freqs_vap, block_id,
-                        use_reentrant=False,
-                    )
-                else:
-                    x, x_vap = vap(block, x, context, t_mod, freqs, x_vap, context_vap, t_mod_vap, freqs_vap, block_id)
-            else:
-                if use_gradient_checkpointing_offload:
-                    with torch.autograd.graph.save_on_cpu():
-                        x = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward(block),
-                            x, context, t_mod, freqs,
-                            use_reentrant=False,
-                        )
-                elif use_gradient_checkpointing:
+            if use_gradient_checkpointing_offload:
+                with torch.autograd.graph.save_on_cpu():
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
                         x, context, t_mod, freqs,
                         use_reentrant=False,
                     )
-                else:
-                    x = block(x, context, t_mod, freqs)
+            elif use_gradient_checkpointing:
+                x = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    x, context, t_mod, freqs,
+                    use_reentrant=False,
+                )
+            else:
+                x = block(x, context, t_mod, freqs)
             
             # VACE
             if vace_context is not None and block_id in vace.vace_layers_mapping:
@@ -1624,36 +1502,6 @@ def model_fn_wan_video(
         f -= 1
     x = dit.unpatchify(x, (f, h, w))
     return x
-
-
-def model_fn_longcat_video(
-    dit: LongCatVideoTransformer3DModel,
-    latents: torch.Tensor = None,
-    timestep: torch.Tensor = None,
-    context: torch.Tensor = None,
-    longcat_latents: torch.Tensor = None,
-    use_gradient_checkpointing=False,
-    use_gradient_checkpointing_offload=False,
-):
-    if longcat_latents is not None:
-        latents[:, :, :longcat_latents.shape[2]] = longcat_latents
-        num_cond_latents = longcat_latents.shape[2]
-    else:
-        num_cond_latents = 0
-    context = context.unsqueeze(0)
-    encoder_attention_mask = torch.any(context != 0, dim=-1)[:, 0].to(torch.int64)
-    output = dit(
-        latents,
-        timestep,
-        context,
-        encoder_attention_mask,
-        num_cond_latents=num_cond_latents,
-        use_gradient_checkpointing=use_gradient_checkpointing,
-        use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
-    )
-    output = -output
-    output = output.to(latents.dtype)
-    return output
 
 
 def model_fn_wans2v(
