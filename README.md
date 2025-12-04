@@ -1,4 +1,7 @@
 ## Phase-Preserving Diffusion
+
+[Project Page](https://yuzeng-at-tri.github.io/ppd-page/)
+
 Example adaptations of SD1.5, FLUX.1-dev and Wan2.2-14b with phase-preserving diffusion. 
 
 This repo is largely borrowed from https://github.com/modelscope/DiffSynth-Studio. Please refer to the original repo for training script and more use cases. 
