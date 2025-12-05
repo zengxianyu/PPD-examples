@@ -4,8 +4,6 @@
 
 Example adaptations of SD1.5, FLUX.1-dev and Wan2.2-14b with phase-preserving diffusion. 
 
-This repo is largely borrowed from https://github.com/modelscope/DiffSynth-Studio. Please refer to the original repo for training script and more use cases. 
-
 ### Usage
 
 1. Install dependency:
@@ -39,7 +37,8 @@ Wan2.2-14b
 PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 python examples/wanvideo/model_inference/Wan2.2-I2V-A14B_ppd.py --input_image output.png --input_video test2.mp4 --prompt  "$(cat test2.txt)" --radius 30 --output output.mp4
 ```
 
-4. For training please refer to https://github.com/modelscope/DiffSynth-Studio 
+
+This repo is largely borrowed from https://github.com/modelscope/DiffSynth-Studio. Please refer to the original repo for the training script and more use cases. 
 
 If you find this work useful, please cite:
 
