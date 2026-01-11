@@ -413,29 +413,6 @@
       ]
     },
     {
-      "id": 43,
-      "type": "MarkdownNote",
-      "pos": [
-        -937.313324390415,
-        105.74258931103202
-      ],
-      "size": [
-        560,
-        360
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {},
-      "widgets_values": [
-        "**Diffusion Model**\n\n- [flux1-dev.safetensors](https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev.safetensors)\n\n**Text Encoder**\n\n- [clip_l.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/blob/main/clip_l.safetensors)\n\n- [t5xxl_fp16.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors) or [t5xxl_fp8_e4m3fn_scaled.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn_scaled.safetensors)\n\n**VAE**\n\n- [ae.safetensors](https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors)\n\n**loras**\n\n- [flux1-dev_phipd_lora_302000.safetensors](https://huggingface.co/zengxianyu/ppd/resolve/main/flux1-dev_phipd_lora_302000.safetensors)\n\n\n```\nComfyUI/\n├── models/\n│   ├── diffusion_models/\n│   │   └─── flux1-dev.safetensors \n│   ├── text_encoders/\n│   │   ├── clip_l.safetensors\n│   │   └─── t5xxl_fp16.safetensors # or t5xxl_fp8_e4m3fn_scaled.safetensors\n│   |── vae/\n│   |   └── ae.safetensors\n│   └── loras/\n│       └── flux1-dev_phipd_lora_302000.safeten\nsors\n```\n"
-      ],
-      "color": "#432",
-      "bgcolor": "#000"
-    },
-    {
       "id": 63,
       "type": "DualCLIPLoader",
       "pos": [
@@ -447,7 +424,7 @@
         130
       ],
       "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -608,7 +585,7 @@
         82
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 4,
       "inputs": [],
       "outputs": [
@@ -650,7 +627,7 @@
         106
       ],
       "flags": {},
-      "order": 7,
+      "order": 6,
       "mode": 4,
       "inputs": [],
       "outputs": [
@@ -694,7 +671,7 @@
         60
       ],
       "flags": {},
-      "order": 8,
+      "order": 7,
       "mode": 4,
       "inputs": [],
       "outputs": [
@@ -736,7 +713,7 @@
         60
       ],
       "flags": {},
-      "order": 9,
+      "order": 8,
       "mode": 4,
       "inputs": [],
       "outputs": [
@@ -1083,7 +1060,7 @@
         440
       ],
       "flags": {},
-      "order": 10,
+      "order": 9,
       "mode": 4,
       "inputs": [],
       "outputs": [],
@@ -1106,7 +1083,7 @@
         563.5624999999966
       ],
       "flags": {},
-      "order": 11,
+      "order": 10,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -1404,7 +1381,7 @@
         228.2076923076923
       ],
       "flags": {},
-      "order": 12,
+      "order": 11,
       "mode": 4,
       "inputs": [],
       "outputs": [
@@ -1676,6 +1653,29 @@
       "widgets_values": [
         "ComfyUI"
       ]
+    },
+    {
+      "id": 43,
+      "type": "MarkdownNote",
+      "pos": [
+        -937.313324390415,
+        105.74258931103202
+      ],
+      "size": [
+        560,
+        360
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "**Diffusion Model**\n\n- [flux1-dev.safetensors](https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev.safetensors)\n\n**Text Encoder**\n\n- [clip_l.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/blob/main/clip_l.safetensors)\n\n- [t5xxl_fp16.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors) or [t5xxl_fp8_e4m3fn_scaled.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn_scaled.safetensors)\n\n**VAE**\n\n- [ae.safetensors](https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors)\n\n**loras**\n\n- [flux1-dev_phipd_lora_302000.safetensors](https://huggingface.co/zengxianyu/ppd/resolve/main/flux1-dev_phipd_lora_302000.safetensors)\n\nCustom nodes: [structured-noise](https://github.com/zengxianyu/structured-noise), [intensity fake depth](https://github.com/zengxianyu/ComfyUIIntensityDepth)\n\n\n```\nComfyUI/\n├── models/\n│   ├── diffusion_models/\n│   │   └─── flux1-dev.safetensors \n│   ├── text_encoders/\n│   │   ├── clip_l.safetensors\n│   │   └─── t5xxl_fp16.safetensors # or t5xxl_fp8_e4m3fn_scaled.safetensors\n│   |── vae/\n│   |   └── ae.safetensors\n│   └── loras/\n│       └── flux1-dev_phipd_lora_302000.safeten\nsors\n```\n"
+      ],
+      "color": "#432",
+      "bgcolor": "#000"
     }
   ],
   "links": [
@@ -2159,10 +2159,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6010518407212895,
+      "scale": 1.4172488000000654,
       "offset": [
-        1172.3952134193257,
-        251.74246877566844
+        1136.7749069466743,
+        -16.387689810448162
       ]
     },
     "frontendVersion": "1.36.13",
