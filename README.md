@@ -37,8 +37,16 @@ Wan2.2-14b
 PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 python examples/wanvideo/model_inference/Wan2.2-I2V-A14B_ppd.py --input_image output.png --input_video test2.mp4 --prompt  "$(cat test2.txt)" --radius 30 --output output.mp4
 ```
 
+### Training
 
-This repo is largely borrowed from https://github.com/modelscope/DiffSynth-Studio. Please refer to the original repo for the training script and more use cases. 
+FLUX Example:
+
+```
+PYTHONPATH=. bash examples/flux/model_training/lora/PPD-FLUX.1-dev.sh
+```
+By default it uses [this dataset](https://huggingface.co/datasets/bghira/photo-concept-bucket) for training
+
+This repo is largely borrowed from https://github.com/modelscope/DiffSynth-Studio. Please refer to the original repo for more training script and more use cases. 
 
 If you find this work useful, please cite:
 
