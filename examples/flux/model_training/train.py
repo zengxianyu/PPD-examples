@@ -1,9 +1,12 @@
 import torch, os, json
+import numpy as np
 from diffsynth import load_state_dict
+from structured_noise import generate_structured_noise_batch_vectorized
 from diffsynth.pipelines.flux_image_new import FluxImagePipeline, ModelConfig, ControlNetInput
 from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, flux_parser
 from diffsynth.models.lora import FluxLoRAConverter
 from diffsynth.trainers.unified_dataset import UnifiedDataset
+from diffsynth.trainers.hf_url_dataset import HuggingFaceURLImageDataset
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -78,6 +81,11 @@ class FluxTrainingModule(DiffusionTrainingModule):
     def forward(self, data, inputs=None):
         if inputs is None: inputs = self.forward_preprocess(data)
         models = {name: getattr(self.pipe, name) for name in self.pipe.in_iteration_models}
+        input_latents = inputs["input_latents"]
+        cutoff_radius = np.random.exponential(scale=1/0.1)
+        input_noise = torch.randn_like(input_latents.float())
+        structured_noise = generate_structured_noise_batch_vectorized(input_latents.float(), cutoff_radius=cutoff_radius, input_noise=input_noise)
+        inputs["noise"] = structured_noise.to(dtype=self.pipe.torch_dtype, device=self.pipe.device)
         loss = self.pipe.training_loss(**models, **inputs)
         return loss
 
@@ -85,21 +93,22 @@ class FluxTrainingModule(DiffusionTrainingModule):
 
 if __name__ == "__main__":
     parser = flux_parser()
+    parser.add_argument("--max_samples", type=int, default=None, help="Maximum number of samples to use for debugging.")
     args = parser.parse_args()
-    dataset = UnifiedDataset(
-        base_path=args.dataset_base_path,
-        metadata_path=args.dataset_metadata_path,
+    dataset = HuggingFaceURLImageDataset(
+        dataset_name="bghira/photo-concept-bucket",
+        url_field="url",
+        text_field="cogvlm_caption",  # or "description", "alt", "title"
+        cache_dir="./url_cache",
+        max_pixels=args.max_pixels,
+        height=None,  # Use dynamic resolution
+        width=None,
+        data_file_keys=("image", "text"),  # Return both image and text
         repeat=args.dataset_repeat,
-        data_file_keys=args.data_file_keys.split(","),
-        main_data_operator=UnifiedDataset.default_image_operator(
-            base_path=args.dataset_base_path,
-            max_pixels=args.max_pixels,
-            height=args.height,
-            width=args.width,
-            height_division_factor=16,
-            width_division_factor=16,
-        )
+        max_samples=args.max_samples,  # Limit to 100 samples for debugging (set to None for full dataset)
     )
+    
+    print(f"Dataset size: {len(dataset)}")
     model = FluxTrainingModule(
         model_paths=args.model_paths,
         model_id_with_origin_paths=args.model_id_with_origin_paths,
@@ -117,4 +126,4 @@ if __name__ == "__main__":
         remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
         state_dict_converter=FluxLoRAConverter.align_to_opensource_format if args.align_to_opensource_format else lambda x:x,
     )
-    launch_training_task(dataset, model, model_logger, args=args)
+    launch_training_task(dataset, model, model_logger, args=args, num_workers=2)

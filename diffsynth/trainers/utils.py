@@ -628,7 +628,7 @@ def wan_parser():
 
 def flux_parser():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
-    parser.add_argument("--dataset_base_path", type=str, default="", required=True, help="Base path of the dataset.")
+    parser.add_argument("--dataset_base_path", type=str, default="", required=False, help="Base path of the dataset.")
     parser.add_argument("--dataset_metadata_path", type=str, default=None, help="Path to the metadata file of the dataset.")
     parser.add_argument("--max_pixels", type=int, default=1024*1024, help="Maximum number of pixels per frame, used for dynamic resolution..")
     parser.add_argument("--height", type=int, default=None, help="Height of images. Leave `height` and `width` empty to enable dynamic resolution.")

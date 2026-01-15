@@ -161,7 +161,7 @@ class ModelConfig:
     path: Union[str, list[str]] = None
     model_id: str = None
     origin_file_pattern: Union[str, list[str]] = None
-    download_resource: str = "ModelScope"
+    download_resource: str = "huggingface"
     offload_device: Optional[Union[str, torch.device]] = None
     offload_dtype: Optional[torch.dtype] = None
     local_model_path: str = None
