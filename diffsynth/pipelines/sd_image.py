@@ -125,14 +125,14 @@ class SDImagePipeline(BasePipeline):
         # Prepare latent tensors
         if noise is not None:
             latents = noise
-        elif input_image is not None:
+        else:
+            noise = self.generate_noise((1, 4, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
+            latents = noise
+        if input_image is not None:
             self.load_models_to_device(['vae_encoder'])
             image = self.preprocess_image(input_image).to(device=self.device, dtype=self.torch_dtype)
             latents = self.encode_image(image, **tiler_kwargs)
-            noise = self.generate_noise((1, 4, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
             latents = self.scheduler.add_noise(latents, noise, timestep=self.scheduler.timesteps[0])
-        else:
-            latents = self.generate_noise((1, 4, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
 
         # Encode prompts
         self.load_models_to_device(['text_encoder'])
